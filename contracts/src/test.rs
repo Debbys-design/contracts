@@ -21,7 +21,7 @@ mod tests {
         let institution = Address::generate(env);
 
         env.mock_all_auths();
-        client.init(&admin).unwrap();
+        client.init(&admin);
 
         (contract_id, client, admin, institution)
     }
