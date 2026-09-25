@@ -792,6 +792,72 @@ fn test_get_status_not_found_fails() {
     assert!(result.is_err());
 }
 
+// #889: status / review / appeal history must not leak PHI to arbitrary callers.
+#[test]
+fn test_phi_reads_reject_unrelated_caller() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+    let outsider = Address::generate(&env);
+
+    assert_eq!(
+        client.try_get_authorization_status(&id, &outsider),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_get_review_history(&id, &outsider),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_get_appeal_history(&id, &outsider),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_phi_reads_reject_reviewer_from_other_insurer() {
+    let (env, provider, patient, insurer) = setup();
+    let ir_id = setup_insurer_registry(&env, &insurer);
+    let other_insurer = Address::generate(&env);
+    InsurerRegistryClient::new(&env, &ir_id).register_insurer(
+        &other_insurer,
+        &String::from_str(&env, "Other Insurer"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 4),
+        &Address::generate(&env),
+        &dummy_hash(&env, 5),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 6),
+    );
+    let client = register_contract(&env, &ir_id);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+
+    let foreign_reviewer = Address::generate(&env);
+    register_test_reviewer(&env, &client, &other_insurer, &foreign_reviewer);
+
+    assert_eq!(
+        client.try_get_authorization_status(&id, &foreign_reviewer),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_phi_reads_allow_request_parties() {
+    let (env, provider, patient, insurer) = setup();
+    let client = setup_client(&env, &insurer);
+    let id = submit(&env, &client, &provider, &patient, &insurer);
+
+    let reviewer = Address::generate(&env);
+    register_test_reviewer(&env, &client, &insurer, &reviewer);
+
+    for reader in [&provider, &patient, &insurer, &reviewer] {
+        assert_eq!(client.get_authorization_status(&id, reader).auth_request_id, id);
+        client.get_review_history(&id, reader);
+        client.get_appeal_history(&id, reader);
+    }
+}
+
 // -----------------------------------------------------------------------
 // Full multi-step workflow
 // -----------------------------------------------------------------------

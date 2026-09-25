@@ -335,7 +335,10 @@ fn test_drug_allergy_and_contraindications() {
     assert!(warning.documentation_required);
 
     client.set_patient_conditions(&patient, &vec![&env, String::from_str(&env, "pregnancy")]);
+    let registry_admin = Address::generate(&env);
+    client.initialize_registry_governance(&registry_admin);
     client.set_medication_contraindications(
+        &registry_admin,
         &med,
         &vec![
             &env,
@@ -436,7 +439,10 @@ fn test_get_contraindications_rejects_unauthorized_caller() {
         &BytesN::from_array(&env, &[4u8; 32]),
     );
     client.set_patient_conditions(&patient, &vec![&env, String::from_str(&env, "pregnancy")]);
+    let registry_admin = Address::generate(&env);
+    client.initialize_registry_governance(&registry_admin);
     client.set_medication_contraindications(
+        &registry_admin,
         &med,
         &vec![&env, String::from_str(&env, "pregnancy")],
     );
@@ -469,7 +475,10 @@ fn test_get_contraindications_allows_patient_self_query() {
         &BytesN::from_array(&env, &[4u8; 32]),
     );
     client.set_patient_conditions(&patient, &vec![&env, String::from_str(&env, "pregnancy")]);
+    let registry_admin = Address::generate(&env);
+    client.initialize_registry_governance(&registry_admin);
     client.set_medication_contraindications(
+        &registry_admin,
         &med,
         &vec![&env, String::from_str(&env, "pregnancy")],
     );
@@ -961,4 +970,63 @@ fn test_controlled_substance_without_schedule_is_rejected() {
 
     let result = client.try_issue_prescription(&provider, &patient, &request);
     assert_eq!(result, Err(Ok(Error::ControlledSubstanceViolation)));
+}
+
+// ── #887: configure_allergy_check must not let any caller seize admin ──
+
+#[test]
+fn test_configure_allergy_check_rejects_admin_takeover() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let registry = Address::generate(&env);
+    let rogue_registry = Address::generate(&env);
+
+    client.configure_allergy_check(&admin, &registry, &true);
+
+    let result = client.try_configure_allergy_check(&attacker, &rogue_registry, &false);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // The legitimate admin can still reconfigure.
+    client.configure_allergy_check(&admin, &registry, &false);
+}
+
+// ── #888: set_medication_contraindications requires a registry writer ──
+
+#[test]
+fn test_set_medication_contraindications_rejects_non_writer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let med = String::from_str(&env, "44444-3000");
+    client.register_medication(
+        &med,
+        &String::from_str(&env, "Penicillin"),
+        &vec![&env, String::from_str(&env, "Pen-V")],
+        &Symbol::new(&env, "abx"),
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+
+    let outsider = Address::generate(&env);
+    let contraindications = vec![&env, String::from_str(&env, "pregnancy")];
+
+    // Ungoverned registry fails closed.
+    let result = client.try_set_medication_contraindications(&outsider, &med, &contraindications);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let registry_admin = Address::generate(&env);
+    client.initialize_registry_governance(&registry_admin);
+
+    let result = client.try_set_medication_contraindications(&outsider, &med, &contraindications);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    client.set_medication_contraindications(&registry_admin, &med, &contraindications);
 }

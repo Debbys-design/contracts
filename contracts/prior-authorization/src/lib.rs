@@ -151,6 +151,32 @@ fn service_codes_covered(
     true
 }
 
+/// Ensure `requester` may read PHI for `req`: the request's provider, patient,
+/// insurer, or an active, unexpired reviewer belonging to that insurer (#889).
+fn require_request_reader(
+    env: &Env,
+    req: &AuthorizationRequest,
+    requester: &Address,
+) -> Result<(), Error> {
+    if *requester == req.provider_id
+        || *requester == req.patient_id
+        || *requester == req.insurer_id
+    {
+        return Ok(());
+    }
+
+    let reviewer = load_reviewer(env, requester).ok_or(Error::Unauthorized)?;
+    if reviewer.insurer_id != req.insurer_id || !reviewer.is_active {
+        return Err(Error::Unauthorized);
+    }
+    if let Some(expires_at) = reviewer.expires_at {
+        if env.ledger().timestamp() > expires_at {
+            return Err(Error::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct PriorAuthorizationContract;
 
@@ -892,6 +918,7 @@ impl PriorAuthorizationContract {
         requester.require_auth();
 
         let req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
+        require_request_reader(&env, &req, &requester)?;
 
         // Detect SLA breach for unresolved requests.
         let unresolved = matches!(
@@ -1036,6 +1063,8 @@ impl PriorAuthorizationContract {
         requester: Address,
     ) -> Result<Vec<Appeal>, Error> {
         requester.require_auth();
+        let req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
+        require_request_reader(&env, &req, &requester)?;
         Ok(load_appeals_for_auth(&env, auth_request_id))
     }
 
@@ -1046,6 +1075,8 @@ impl PriorAuthorizationContract {
         requester: Address,
     ) -> Result<Vec<ReviewRecord>, Error> {
         requester.require_auth();
+        let req = load_auth_request(&env, auth_request_id).ok_or(Error::AuthRequestNotFound)?;
+        require_request_reader(&env, &req, &requester)?;
         Ok(load_review_history(&env, auth_request_id))
     }
 }
