@@ -388,15 +388,13 @@ impl AppointmentScheduling {
             .set(&doctor_key, &doctor_appointments);
 
         // Emit versioned event
-        env.events().publish(
-            AppointmentCreated {
-                version: EVENT_VERSION,
-                appointment_id,
-                patient: patient.clone(),
-                doctor: doctor.clone(),
-            },
-            (),
-        );
+        AppointmentCreated {
+            version: EVENT_VERSION,
+            appointment_id,
+            patient: patient.clone(),
+            doctor: doctor.clone(),
+        }
+        .publish(&env);
 
         Ok(appointment_id)
     }
@@ -430,14 +428,11 @@ impl AppointmentScheduling {
             .set(&appointment_key, &appointment);
 
         // Emit versioned event
-        env.events()
-            .publish(
-                AppointmentCancelled {
-                    version: EVENT_VERSION,
-                    appointment_id,
-                },
-                (),
-            );
+        AppointmentCancelled {
+            version: EVENT_VERSION,
+            appointment_id,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -470,14 +465,11 @@ impl AppointmentScheduling {
             .set(&appointment_key, &appointment);
 
         // Emit versioned event
-        env.events()
-            .publish(
-                AppointmentCompleted {
-                    version: EVENT_VERSION,
-                    appointment_id,
-                },
-                (),
-            );
+        AppointmentCompleted {
+            version: EVENT_VERSION,
+            appointment_id,
+        }
+        .publish(&env);
         Ok(())
     }
 

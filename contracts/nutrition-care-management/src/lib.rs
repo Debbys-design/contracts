@@ -1003,10 +1003,24 @@ impl NutritionCareContract {
     // #566 — admin-settable care-plan contract address
     // ------------------------------------------------------------------
 
-    /// Set the address of the external care-plan contract (admin only).
-    pub fn set_care_plan_contract(env: Env, admin: Address, care_plan_addr: Address) {
+    /// Set the address of the external care-plan contract.
+    /// Only the current contraindication admin can update this.
+    pub fn set_care_plan_contract(
+        env: Env,
+        admin: Address,
+        care_plan_addr: Address,
+    ) -> Result<(), Error> {
         admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
         set_care_plan_contract_address(&env, &care_plan_addr);
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1015,15 +1029,25 @@ impl NutritionCareContract {
 
     /// Link a recorded clinical outcome to an entry in the external care-plan contract.
     ///
+    /// `caller` must be authorized on the outcome's nutrition care plan
+    /// (dietitian, patient, or a provider granted via `authorize_provider`).
+    ///
     /// Idempotent: linking the same outcome to the same care plan twice is a no-op.
     /// Returns `Error::CarePlanContractNotConfigured` when no address has been set.
     pub fn link_to_care_plan(
         env: Env,
+        caller: Address,
         outcome_id: u64,
         care_plan_id: u64,
     ) -> Result<(), Error> {
+        caller.require_auth();
+
         // Confirm outcome exists.
-        load_clinical_outcome(&env, outcome_id).ok_or(Error::OutcomeNotFound)?;
+        let outcome = load_clinical_outcome(&env, outcome_id).ok_or(Error::OutcomeNotFound)?;
+
+        if !is_provider_authorized(&env, outcome.care_plan_id, &caller) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         // Require care-plan contract address to be configured.
         get_care_plan_contract_address(&env)

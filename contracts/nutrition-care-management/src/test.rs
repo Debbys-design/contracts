@@ -1657,8 +1657,8 @@ fn test_link_to_care_plan_no_address_configured() {
     );
 
     // No care-plan contract address set → must fail gracefully.
-    let result = client.try_link_to_care_plan(&outcome_id, &42u64);
-    assert!(result.is_err());
+    let result = client.try_link_to_care_plan(&dietitian, &outcome_id, &42u64);
+    assert_eq!(result, Err(Ok(Error::CarePlanContractNotConfigured)));
 }
 
 #[test]
@@ -1676,14 +1676,94 @@ fn test_link_to_care_plan_success_and_idempotent() {
     );
 
     let admin = Address::generate(&env);
+    client.init_contraindication_admin(&admin);
     let dummy_care_plan_contract = Address::generate(&env);
     client.set_care_plan_contract(&admin, &dummy_care_plan_contract);
 
     // First link — should succeed.
-    client.link_to_care_plan(&outcome_id, &99u64);
+    client.link_to_care_plan(&dietitian, &outcome_id, &99u64);
 
     // Second link to same care plan — idempotent, must not panic.
-    client.link_to_care_plan(&outcome_id, &99u64);
+    client.link_to_care_plan(&dietitian, &outcome_id, &99u64);
+
+    // The patient is also authorized on the plan and may link.
+    client.link_to_care_plan(&patient, &outcome_id, &100u64);
+}
+
+#[test]
+fn test_link_to_care_plan_rejects_unauthorized_caller() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    let admin = Address::generate(&env);
+    client.init_contraindication_admin(&admin);
+    client.set_care_plan_contract(&admin, &Address::generate(&env));
+
+    let attacker = Address::generate(&env);
+    let result = client.try_link_to_care_plan(&attacker, &outcome_id, &99u64);
+    assert_eq!(result, Err(Ok(Error::ProviderNotAuthorized)));
+}
+
+#[test]
+#[should_panic]
+fn test_link_to_care_plan_requires_caller_auth() {
+    let (env, patient, dietitian, _provider) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+
+    let outcome_id = client.link_outcome(
+        &care_plan_id,
+        &dietitian,
+        &String::from_str(&env, "weight_kg"),
+        &7000i64,
+        &1_000_000u64,
+    );
+
+    let admin = Address::generate(&env);
+    client.init_contraindication_admin(&admin);
+    client.set_care_plan_contract(&admin, &Address::generate(&env));
+
+    // The dietitian is authorized on the plan but does not sign.
+    env.set_auths(&[]);
+    client.link_to_care_plan(&dietitian, &outcome_id, &99u64);
+}
+
+// -----------------------------------------------------------------------
+// #883 — set_care_plan_contract admin verification
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_set_care_plan_contract_rejects_when_no_admin_configured() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let caller = Address::generate(&env);
+
+    let result = client.try_set_care_plan_contract(&caller, &Address::generate(&env));
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_set_care_plan_contract_rejects_non_admin() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    client.init_contraindication_admin(&admin);
+
+    let result = client.try_set_care_plan_contract(&attacker, &Address::generate(&env));
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // The real admin can still configure it.
+    client.set_care_plan_contract(&admin, &Address::generate(&env));
 }
 
 // -----------------------------------------------------------------------
