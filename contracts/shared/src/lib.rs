@@ -10,6 +10,7 @@
 //! **Access Control Safeguards:** Actor verification module validates authorization across contracts.
 //! Privacy controls enforce encryption policies. Role-based access control validation. Address
 //! validation prevents unauthorized access. Pause mechanisms for emergency contract stopping.
+//! Shared access-grant helper maintains per-patient provider grants and index in lockstep.
 //!
 //! **Audit Controls:** Incident tracking with severity levels and correlation IDs. Error hints
 //! for diagnostics. Event versioning for schema identification. Temporal utilities for audit trail
@@ -24,6 +25,7 @@
 //! Incident correlation IDs enable secure cross-contract audit trails. Cryptographic hashing
 //! for integrity verification.
 
+pub mod access_grant;
 pub mod actor_verification;
 #[cfg(test)]
 pub mod test_utils;
