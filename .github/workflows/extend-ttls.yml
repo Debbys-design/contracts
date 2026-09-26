@@ -15,6 +15,11 @@ on:
         options:
           - mainnet
           - testnet
+      ledgers_to_extend:
+        description: "Number of ledgers to extend TTLs by"
+        required: false
+        default: "2000000"
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -100,6 +105,7 @@ jobs:
       - name: Extend TTLs for all deployed contracts
         env:
           NETWORK: ${{ needs.ttl-monitoring.outputs.network }}
+          LEDGERS_TO_EXTEND: ${{ github.event.inputs.ledgers_to_extend || '2000000' }}
         run: |
           export MANIFEST="deployments/${NETWORK}.json"
 
@@ -118,21 +124,41 @@ jobs:
             exit 0
           fi
 
+          echo "Extending TTLs by ${LEDGERS_TO_EXTEND} ledgers on ${NETWORK}."
+
           FAILED=0
+          SUCCEEDED=0
+          FAILED_CONTRACTS=""
           while IFS= read -r contract_id; do
             echo "Extending TTL for contract: ${contract_id}"
-            stellar contract extend \
+            if stellar contract extend \
               --id "$contract_id" \
               --source extender \
               --network "$NETWORK" \
-              --ledgers-to-extend 2000000 || {
+              --ledgers-to-extend "$LEDGERS_TO_EXTEND"; then
+              SUCCEEDED=$((SUCCEEDED + 1))
+            else
               echo "::warning::Failed to extend TTL for ${contract_id}"
               FAILED=$((FAILED + 1))
-            }
+              FAILED_CONTRACTS="${FAILED_CONTRACTS}${contract_id}\n"
+            fi
           done <<< "$CONTRACT_IDS"
 
+          echo "### TTL Extension Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Network: \`${NETWORK}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ledgers to extend: \`${LEDGERS_TO_EXTEND}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Succeeded: ${SUCCEEDED}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Failed: ${FAILED}" >> "$GITHUB_STEP_SUMMARY"
+
           if [ "$FAILED" -gt 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "#### Contracts that failed" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            printf "%b" "$FAILED_CONTRACTS" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "::error::${FAILED} contract(s) failed to have their TTL extended."
+            echo "::error::Re-run this workflow manually (workflow_dispatch) to retry the failed contracts."
             exit 1
           fi
 
