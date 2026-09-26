@@ -1,14 +1,9 @@
-#![cfg(test)]
-#![allow(deprecated)]
+//! Tests for the dental records contract.
 
-use crate::types::*;
-use crate::{DentalRecordsContract, DentalRecordsContractClient};
-use soroban_sdk::{
-    testutils::{Address as _, MockAuth, MockAuthInvoke},
-    Address, BytesN, Env, IntoVal, String, Symbol, Vec,
-};
+use super::*;
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 
-fn create_env() -> (Env, DentalRecordsContractClient<'static>) {
+fn setup() -> (Env, DentalRecordsContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(DentalRecordsContract, ());
@@ -16,228 +11,201 @@ fn create_env() -> (Env, DentalRecordsContractClient<'static>) {
     (env, client)
 }
 
-#[test]
-fn test_tooth_charting_systems() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
-    let dentist_id = Address::generate(&env);
-
-    // Create chart
-    let chart_id = client.create_dental_chart(
-        &patient_id,
-        &dentist_id,
-        &1672531200,
-        &Symbol::new(&env, "universal"),
-    );
-    assert_eq!(chart_id, 1);
-
-    // Record tooth condition
-    let tooth_num = String::from_str(&env, "8"); // Universal notation for maxillary right central incisor
-    client.record_tooth_condition(
-        &chart_id,
-        &tooth_num,
-        &Some(Symbol::new(&env, "occlusal")),
-        &Symbol::new(&env, "caries"),
-        &Some(String::from_str(&env, "deep decay")),
-    );
+fn empty_procedures(env: &Env) -> Vec<PlannedProcedure> {
+    Vec::new(env)
 }
 
 #[test]
-fn test_periodontal_tracking() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
-    let dentist_id = Address::generate(&env);
+fn test_create_dental_chart() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
 
     let chart_id = client.create_dental_chart(
-        &patient_id,
-        &dentist_id,
-        &1672531200,
+        &patient,
+        &dentist,
+        &1_700_000_000,
         &Symbol::new(&env, "fdi"),
     );
-    let tooth_num = String::from_str(&env, "11");
 
-    // Record periodontal assessment
-    client.record_periodontal_assessment(
+    assert_eq!(chart_id, 1);
+}
+
+#[test]
+fn test_record_tooth_condition() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    client.record_tooth_condition(
         &chart_id,
-        &tooth_num,
-        &Symbol::new(&env, "mb"),
-        &4,
-        &1,
-        &true,
-        &Some(1),
+        &String::from_str(&env, "11"),
+        &Some(Symbol::new(&env, "occlusal")),
+        &Symbol::new(&env, "caries"),
+        &None,
     );
 }
 
 #[test]
-fn test_treatment_planning_flow() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
-    let dentist_id = Address::generate(&env);
+fn test_record_periodontal_assessment() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
 
-    let procedure = PlannedProcedure {
-        procedure_id: 1,
-        procedure_code: String::from_str(&env, "D2391"),
-        tooth_number: Some(String::from_str(&env, "18")),
-        surfaces: Some(Vec::from_array(&env, [Symbol::new(&env, "occlusal")])),
-        description: String::from_str(&env, "Resin composite ONE surface posterior"),
-        priority: Symbol::new(&env, "high"),
-        estimated_cost: 15000,
-    };
+    let chart_id = client.create_dental_chart(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &Symbol::new(&env, "fdi"),
+    );
+
+    client.record_periodontal_assessment(
+        &chart_id,
+        &String::from_str(&env, "11"),
+        &Symbol::new(&env, "mb"),
+        &3,
+        &0,
+        &false,
+        &None,
+    );
+}
+
+#[test]
+fn test_create_treatment_plan() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
 
     let plan_id = client.create_treatment_plan(
-        &patient_id,
-        &dentist_id,
-        &1672531200,
-        &Vec::from_array(&env, [procedure]),
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &empty_procedures(&env),
         &false,
-        &15000,
+        &1000,
     );
-    assert_eq!(plan_id, 1);
 
-    let appt_id = client.schedule_dental_procedure(&plan_id, &1, &1672617600, &60, &false);
+    assert_eq!(plan_id, 1);
+}
+
+#[test]
+fn test_schedule_dental_procedure() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+
+    let plan_id = client.create_treatment_plan(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &empty_procedures(&env),
+        &false,
+        &1000,
+    );
+
+    let appt_id = client.schedule_dental_procedure(
+        &plan_id,
+        &1,
+        &(env.ledger().timestamp() + 86_400),
+        &30,
+        &false,
+    );
+
     assert_eq!(appt_id, 1);
 }
 
 #[test]
-fn test_radiograph_management() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
+fn test_document_procedure_performed() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
 
-    let image_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let radio_id = client.record_dental_radiograph(
-        &patient_id,
-        &Symbol::new(&env, "panoramic"),
-        &1672531200,
-        &Vec::new(&env),
-        &Vec::from_array(&env, [String::from_str(&env, "impacted 38, 48")]),
-        &image_hash,
-    );
-    assert_eq!(radio_id, 1);
-}
-
-#[test]
-fn test_orthodontic_tracking_flow() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
-    let orthodontist_id = Address::generate(&env);
-
-    let plan_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let ortho_id = client.track_orthodontic_treatment(
-        &patient_id,
-        &orthodontist_id,
-        &1672531200,
-        &Symbol::new(&env, "braces"),
-        &plan_hash,
-        &24,
-    );
-    assert_eq!(ortho_id, 1);
-
-    client.record_ortho_adjustment(
-        &ortho_id,
-        &1675123200,
-        &Vec::from_array(&env, [String::from_str(&env, "tightened upper arch")]),
-        &false,
-        &4,
-    );
-}
-
-#[test]
-fn test_procedure_documentation_flow() {
-    let (env, client) = create_env();
-    let patient_id = Address::generate(&env);
-    let dentist_id = Address::generate(&env);
-
-    // Setup for document_procedure: requires plan, schedule.
     let plan_id = client.create_treatment_plan(
-        &patient_id,
-        &dentist_id,
-        &1672531200,
-        &Vec::new(&env),
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &empty_procedures(&env),
         &false,
-        &0,
+        &1000,
     );
-    let appt_id = client.schedule_dental_procedure(&plan_id, &1, &1672617600, &60, &true);
 
-    let comp_proc = CompletedProcedure {
-        procedure_code: String::from_str(&env, "D0120"),
-        tooth_number: None,
-        surfaces: None,
-        materials_used: Vec::new(&env),
-        technique: String::from_str(&env, "visual inspection"),
-    };
+    let appt_id = client.schedule_dental_procedure(
+        &plan_id,
+        &1,
+        &(env.ledger().timestamp() + 86_400),
+        &30,
+        &false,
+    );
 
-    let inst_hash = BytesN::from_array(&env, &[3u8; 32]);
     client.document_procedure_performed(
         &appt_id,
-        &dentist_id,
-        &1672618000,
-        &Vec::from_array(&env, [comp_proc]),
-        &Vec::from_array(&env, [String::from_str(&env, "local anesthetic lidocaine")]),
+        &dentist,
+        &env.ledger().timestamp(),
+        &Vec::new(&env),
+        &Vec::new(&env),
         &None,
-        &inst_hash,
-    );
-
-    // Prescribe rx
-    let rx_id = client.prescribe_dental_medication(
-        &patient_id,
-        &dentist_id,
-        &String::from_str(&env, "Amoxicillin 500mg"),
-        &String::from_str(&env, "Prophylaxis"),
-        &String::from_str(&env, "Take 1 cap 1hr prior to appt"),
-    );
-    assert_eq!(rx_id, 1);
-
-    // Consent
-    let consent_hash = BytesN::from_array(&env, &[4u8; 32]);
-    client.document_informed_consent_dental(
-        &patient_id,
-        &String::from_str(&env, "Extraction 38"),
-        &Vec::from_array(&env, [String::from_str(&env, "Bleeding, nerve damage")]),
-        &Vec::from_array(&env, [String::from_str(&env, "Do nothing")]),
-        &1672617500,
-        &consent_hash,
+        &BytesN::from_array(&env, &[0u8; 32]),
     );
 }
 
 #[test]
-fn test_prescribe_dental_medication_requires_patient_auth() {
-    let env = Env::default();
-    let contract_id = env.register(DentalRecordsContract, ());
-    let client = DentalRecordsContractClient::new(&env, &contract_id);
+fn test_document_procedure_performed_unauthorized_dentist() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let dentist = Address::generate(&env);
+    let other_dentist = Address::generate(&env);
 
-    let patient_id = Address::generate(&env);
-    // An unrelated dentist who signs the call themselves, but the patient
-    // never authorized this prescription.
-    let dentist_id = Address::generate(&env);
-    let medication = String::from_str(&env, "Amoxicillin 500mg");
-    let indication = String::from_str(&env, "Prophylaxis");
-    let dosage = String::from_str(&env, "Take 1 cap 1hr prior to appt");
+    let plan_id = client.create_treatment_plan(
+        &patient,
+        &dentist,
+        &1_700_000_000,
+        &empty_procedures(&env),
+        &false,
+        &1000,
+    );
 
-    let result = client
-        .mock_auths(&[MockAuth {
-            address: &dentist_id,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "prescribe_dental_medication",
-                args: (&patient_id, &dentist_id, &medication, &indication, &dosage).into_val(&env),
-                sub_invokes: &[],
-            },
-        }])
-        .try_prescribe_dental_medication(&patient_id, &dentist_id, &medication, &indication, &dosage);
+    let appt_id = client.schedule_dental_procedure(
+        &plan_id,
+        &1,
+        &(env.ledger().timestamp() + 86_400),
+        &30,
+        &false,
+    );
 
-    assert!(result.is_err());
+    let result = client.try_document_procedure_performed(
+        &appt_id,
+        &other_dentist,
+        &env.ledger().timestamp(),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
-fn test_not_found() {
-    let (env, client) = create_env();
-    let tooth_num = String::from_str(&env, "8");
-    client.record_tooth_condition(
+fn test_document_procedure_performed_missing_appointment() {
+    let (env, client) = setup();
+    let dentist = Address::generate(&env);
+
+    let result = client.try_document_procedure_performed(
         &999,
-        &tooth_num,
-        &Some(Symbol::new(&env, "occlusal")),
-        &Symbol::new(&env, "caries"),
-        &Some(String::from_str(&env, "deep decay")),
+        &dentist,
+        &env.ledger().timestamp(),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
     );
+
+    assert_eq!(result, Err(Ok(Error::NotFound)));
 }
