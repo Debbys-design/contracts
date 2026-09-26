@@ -267,3 +267,31 @@ fn test_create_reminder_emits_event() {
     // Should have at least one event from create_reminder
     assert!(events.len() > 0);
 }
+
+// ── #851: create_reminder must enforce the provider-registry check ───────────
+
+#[test]
+#[should_panic]
+fn test_create_reminder_rejects_unregistered_provider() {
+    let env = Env::default();
+    let contract_id = env.register(ClinicalGuidelineContract, ());
+    let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let unregistered_provider = Address::generate(&env);
+    let due_date = 1000000;
+
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 12345;
+    });
+
+    // An unregistered provider must not be able to create a reminder.
+    client.create_reminder(
+        &patient,
+        &unregistered_provider,
+        &Symbol::new(&env, "MEDS"),
+        &due_date,
+        &Symbol::new(&env, "HIGH"),
+    );
+}
