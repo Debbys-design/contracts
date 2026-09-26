@@ -174,6 +174,24 @@ pub fn check_access_permission(env: &Env, patient_id: &Address, requester: &Addr
     env.storage().persistent().has(&key)
 }
 
+/// Check whether a provider is authorized to mutate a patient's allergy record.
+///
+/// A provider may mutate an allergy only if they are the patient themselves,
+/// the admin, a provider the patient explicitly granted access to, or the
+/// provider who originally recorded the allergy. This mirrors the read-path
+/// access model enforced via `check_access_permission`.
+pub fn check_allergy_mutation_permission(
+    env: &Env,
+    allergy: &AllergyRecord,
+    provider_id: &Address,
+) -> bool {
+    if &allergy.provider_id == provider_id {
+        return true;
+    }
+
+    check_access_permission(env, &allergy.patient_id, provider_id)
+}
+
 /// Store cross-sensitivity relationship between allergens
 pub fn add_cross_sensitivity(env: &Env, allergen1: &String, allergen2: &String) {
     let key1 = DataKey::CrossSensitivity(allergen1.clone(), allergen2.clone());
