@@ -376,3 +376,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-867 -->
 - #867: [medical-device-tracking] Crate fails to compile: use-after-move on Symbol/Address fields
+
+<!-- handsoff-issue-868 -->
+- #868: [medical-claims] Crate fails to compile: use-after-move on reviewer in register_reviewer
