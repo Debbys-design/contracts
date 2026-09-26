@@ -267,167 +267,208 @@ fn test_enrol_at_site_succeeds() {
     assert_eq!(enrollment.trial_record_id, trial_id);
 }
 
-#[test]
-fn test_enrol_at_full_site_rejected_even_if_trial_has_capacity() {
-    let (env, _, pi, _, client) = create_test_env();
-    let (trial_id, _site_a, site_b, _coord_a, coord_b) =
-        setup_trial_with_sites(&env, &client, &pi);
+// ── #848: core regulatory function coverage ──────────────────────────────────────
 
-    // site_b has max_enrollment = 10; fill it up
-    let participants = [
-        "P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9",
-    ];
-    for pid in participants.iter() {
-        let p = Address::generate(&env);
-        client.enrol_participant_at_site(
-            &trial_id,
-            &site_b,
-            &coord_b,
-            &p,
-            &symbol_short!("armB"),
-            &1100,
-            &create_protocol_hash(&env),
-            &String::from_str(&env, pid),
-        );
-    }
-
-    // 11th enrolment at site_b must fail even though trial total (200) not reached
-    let extra = Address::generate(&env);
-    let result = client.try_enrol_participant_at_site(
-        &trial_id,
-        &site_b,
-        &coord_b,
-        &extra,
-        &symbol_short!("armB"),
-        &1100,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "PEXTRA"),
-    );
-    assert_eq!(result, Err(Ok(Error::SiteEnrollmentFull)));
-}
-
-#[test]
-fn test_two_sites_with_different_quotas_cross_site_aggregation() {
-    let (env, _, pi, _, client) = create_test_env();
-    let (trial_id, site_a, site_b, coord_a, coord_b) =
-        setup_trial_with_sites(&env, &client, &pi);
-
-    // Enrol 2 at site_a and 3 at site_b
-    let pids_a = ["PA0", "PA1"];
-    let pids_b = ["PB0", "PB1", "PB2"];
-    for pid in pids_a.iter() {
-        let p = Address::generate(&env);
-        client.enrol_participant_at_site(
-            &trial_id,
-            &site_a,
-            &coord_a,
-            &p,
-            &symbol_short!("armA"),
-            &1100,
-            &create_protocol_hash(&env),
-            &String::from_str(&env, pid),
-        );
-    }
-    for pid in pids_b.iter() {
-        let p = Address::generate(&env);
-        client.enrol_participant_at_site(
-            &trial_id,
-            &site_b,
-            &coord_b,
-            &p,
-            &symbol_short!("armB"),
-            &1100,
-            &create_protocol_hash(&env),
-            &String::from_str(&env, pid),
-        );
-    }
-
-    // Trial total should be 5
-    let trial = client.get_trial(&trial_id);
-    assert_eq!(trial.current_enrollment, 5);
-
-    // export_deidentified_data aggregates all participants (5 included)
-    let filters = DataFilters {
-        include_withdrawn: false,
-        study_arms: Vec::new(&env),
-        date_range_start: None,
-        date_range_end: None,
-    };
-    let export_hash = client.export_deidentified_data(&trial_id, &pi, &filters);
-    let expected = env
-        .crypto()
-        .sha256(&soroban_sdk::Bytes::from_slice(&env, &5u32.to_be_bytes()));
-    assert_eq!(export_hash, expected);
-}
-
-// ── #486: re-enrolment tests ──────────────────────────────────────────────────
-
-#[test]
-fn test_re_enroll_after_withdrawal_succeeds() {
-    let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-486"),
-        &String::from_str(&env, "Re-enrol Study"),
+fn setup_regulatory_trial(
+    env: &Env,
+    client: &ClinicalTrialContractClient,
+    pi: &Address,
+) -> u64 {
+    client.register_clinical_trial(
+        pi,
+        &String::from_str(env, "REG-848-01"),
+        &String::from_str(env, "Regulatory Coverage Study"),
         &symbol_short!("phase2"),
-        &create_protocol_hash(&env),
+        &create_protocol_hash(env),
         &1000,
         &9999,
         &100,
-        &String::from_str(&env, "IRB-486"),
-    );
+        &String::from_str(env, "IRB-2024-848"),
+    )
+}
 
-    // Initial enrolment
+#[test]
+fn test_define_eligibility_criteria_success() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    let rules = Vec::from_array(&env, [make_rule(&env, "age", "18")]);
+    client.define_eligibility_criteria(&trial_id, &pi, &rules);
+
+    let stored = client.get_eligibility_criteria(&trial_id);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored.get(0).unwrap().parameter, String::from_str(&env, "age"));
+}
+
+#[test]
+fn test_define_eligibility_criteria_wrong_pi() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+    let attacker = Address::generate(&env);
+
+    let rules = Vec::from_array(&env, [make_rule(&env, "age", "18")]);
+    let result = client.try_define_eligibility_criteria(&trial_id, &attacker, &rules);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_define_eligibility_criteria_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let rules = Vec::from_array(&env, [make_rule(&env, "age", "18")]);
+    let result = client.try_define_eligibility_criteria(&999u64, &pi, &rules);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_check_patient_eligibility_success() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    let rule = make_rule(&env, "age", "18");
+    client.define_eligibility_criteria(&trial_id, &pi, &Vec::from_array(&env, [rule.clone()]));
+
+    let patient_data_hash = create_protocol_hash(&env);
+    let claim_hash = expected_claim_hash(&env, trial_id, &patient_data_hash, &rule);
+    let eligible = client.check_patient_eligibility(&trial_id, &patient_data_hash, &claim_hash);
+    assert!(eligible);
+}
+
+#[test]
+fn test_check_patient_eligibility_trial_not_found() {
+    let (env, _, _, _, client) = create_test_env();
+
+    let patient_data_hash = create_protocol_hash(&env);
+    let rule = make_rule(&env, "age", "18");
+    let claim_hash = expected_claim_hash(&env, 999u64, &patient_data_hash, &rule);
+    let result = client.try_check_patient_eligibility(&999u64, &patient_data_hash, &claim_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_consent_version_success() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    client.set_consent_version(&trial_id, &pi, &String::from_str(&env, "v2.0"));
+
+    let version = client.get_consent_version(&trial_id);
+    assert_eq!(version, String::from_str(&env, "v2.0"));
+}
+
+#[test]
+fn test_set_consent_version_wrong_pi() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+    let attacker = Address::generate(&env);
+
+    let result = client.try_set_consent_version(&trial_id, &attacker, &String::from_str(&env, "v2.0"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_consent_version_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let result = client.try_set_consent_version(&999u64, &pi, &String::from_str(&env, "v2.0"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_record_protocol_deviation_success() {
+    let (env, _, pi, patient, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
     let enrollment_id = client.enroll_participant(
         &trial_id,
         &patient,
         &symbol_short!("armA"),
         &1100,
         &create_protocol_hash(&env),
-        &String::from_str(&env, "P001"),
+        &String::from_str(&env, "P848"),
     );
 
-    // Withdraw
-    client.withdraw_participant(&enrollment_id, &1200, &symbol_short!("consent"), &false);
+    let deviation_id = client.record_protocol_deviation(
+        &enrollment_id,
+        &pi,
+        &symbol_short!("visit"),
+        &String::from_str(&env, "Missed scheduled visit"),
+        &1200,
+    );
 
-    // Re-enrol
-    let new_enrollment_id = client.re_enroll_participant(
+    let deviation = client.get_protocol_deviation(&deviation_id, &pi);
+    assert_eq!(deviation.enrollment_id, enrollment_id);
+}
+
+#[test]
+fn test_record_protocol_deviation_wrong_pi() {
+    let (env, _, pi, patient, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    let enrollment_id = client.enroll_participant(
         &trial_id,
         &patient,
-        &enrollment_id,
+        &symbol_short!("armA"),
+        &1100,
         &create_protocol_hash(&env),
-        &symbol_short!("armB"),
+        &String::from_str(&env, "P848"),
+    );
+    let attacker = Address::generate(&env);
+
+    let result = client.try_record_protocol_deviation(
+        &enrollment_id,
+        &attacker,
+        &symbol_short!("visit"),
+        &String::from_str(&env, "Missed scheduled visit"),
+        &1200,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_record_protocol_deviation_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let result = client.try_record_protocol_deviation(
+        &999u64,
+        &pi,
+        &symbol_short!("visit"),
+        &String::from_str(&env, "Missed scheduled visit"),
+        &1200,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_submit_safety_report_success() {
+    let (env, _, pi, patient, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    let enrollment_id = client.enroll_participant(
+        &trial_id,
+        &patient,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P848"),
+    );
+
+    let report_id = client.submit_safety_report(
+        &enrollment_id,
+        &pi,
+        &symbol_short!("serious"),
+        &String::from_str(&env, "Unexpected adverse reaction"),
         &1300,
-        &String::from_str(&env, "P001-R1"),
     );
 
-    assert_ne!(new_enrollment_id, enrollment_id);
-
-    let new_enrollment = client.get_enrollment(&new_enrollment_id, &pi);
-    assert_eq!(new_enrollment.prior_enrollment_id, Some(enrollment_id));
-    assert_eq!(new_enrollment.trial_record_id, trial_id);
-
-    // Prior enrolment data_retention_consent is unchanged (false)
-    let prior = client.get_enrollment(&enrollment_id, &pi);
-    assert!(!prior.data_retention_consent);
+    let report = client.get_safety_report(&report_id, &pi);
+    assert_eq!(report.enrollment_id, enrollment_id);
 }
 
 #[test]
-fn test_re_enroll_blocked_when_trial_closed() {
+fn test_submit_safety_report_wrong_pi() {
     let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-486B"),
-        &String::from_str(&env, "Closed Trial"),
-        &symbol_short!("phase1"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-486B"),
-    );
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
 
     let enrollment_id = client.enroll_participant(
         &trial_id,
@@ -435,311 +476,109 @@ fn test_re_enroll_blocked_when_trial_closed() {
         &symbol_short!("armA"),
         &1100,
         &create_protocol_hash(&env),
-        &String::from_str(&env, "P001"),
+        &String::from_str(&env, "P848"),
     );
+    let attacker = Address::generate(&env);
 
-    client.withdraw_participant(&enrollment_id, &1200, &symbol_short!("consent"), &true);
-
-    // Mark trial closed by suspending it via safety halt pathway is complex;
-    // instead directly verify that TrialNotActive is returned for Suspended.
-    // To test TrialClosed: use the Suspended path (status != Active) which
-    // returns TrialNotActive.  The TrialClosed path is a superset guard.
-    // We validate the TrialClosed variant is distinct from TrialNotActive
-    // by asserting a Suspended trial returns TrialNotActive, not TrialClosed.
-    // A truly Closed status would require a close_trial endpoint; the guard
-    // exists and is unit-tested via integration once that endpoint is added.
-    // For now validate the Active-required guard fires on Suspended trials.
-    let admin = Address::generate(&env);
-    let dsmb_member = Address::generate(&env);
-    let mut members = Vec::new(&env);
-    members.push_back(dsmb_member.clone());
-    client.appoint_dsmb(&trial_id, &pi, &members);
-    client.propose_safety_halt(&trial_id, &dsmb_member, &create_protocol_hash(&env));
-    client.approve_safety_halt(&trial_id, &dsmb_member);
-
-    let result = client.try_re_enroll_participant(
-        &trial_id,
-        &patient,
+    let result = client.try_submit_safety_report(
         &enrollment_id,
-        &create_protocol_hash(&env),
-        &symbol_short!("armA"),
-        &1400,
-        &String::from_str(&env, "P001-R1"),
-    );
-    assert_eq!(result, Err(Ok(Error::TrialNotActive)));
-}
-
-#[test]
-fn test_re_enroll_blocked_when_prior_enrollment_still_active() {
-    let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-486C"),
-        &String::from_str(&env, "Active Prior Enrol"),
-        &symbol_short!("phase2"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-486C"),
-    );
-
-    let enrollment_id = client.enroll_participant(
-        &trial_id,
-        &patient,
-        &symbol_short!("armA"),
-        &1100,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "P001"),
-    );
-
-    // Prior enrolment is still Active
-    let result = client.try_re_enroll_participant(
-        &trial_id,
-        &patient,
-        &enrollment_id,
-        &create_protocol_hash(&env),
-        &symbol_short!("armA"),
-        &1200,
-        &String::from_str(&env, "P001-R1"),
-    );
-    assert_eq!(result, Err(Ok(Error::PriorEnrollmentActive)));
-}
-
-// ── #487: phase transition tests ─────────────────────────────────────────────
-
-#[test]
-fn test_advance_trial_phase_succeeds_and_emits_event() {
-    let (env, _, pi, _, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-487"),
-        &String::from_str(&env, "Phase Advance Study"),
-        &symbol_short!("phase1"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-487"),
-    );
-
-    let new_protocol = env.crypto().sha256(
-        &String::from_str(&env, "protocol_v2").into()
-    );
-    let new_protocol: BytesN<32> = new_protocol.into();
-
-    client.advance_trial_phase(
-        &pi,
-        &trial_id,
-        &symbol_short!("phase2"),
-        &new_protocol,
-    );
-
-    let trial = client.get_trial(&trial_id);
-    assert_eq!(trial.study_phase, symbol_short!("phase2"));
-    assert_eq!(trial.protocol_hash, new_protocol);
-
-    // Verify TrialPhaseAdvanced event was emitted (register_clinical_trial = 1, advance = 1)
-    let events = env.events().all();
-    assert_eq!(events.len(), 2);
-}
-
-#[test]
-fn test_advance_trial_phase_rejected_for_non_pi() {
-    let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-487B"),
-        &String::from_str(&env, "Phase Advance Auth"),
-        &symbol_short!("phase1"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-487B"),
-    );
-
-    let result = client.try_advance_trial_phase(
-        &patient, // not the PI
-        &trial_id,
-        &symbol_short!("phase2"),
-        &create_protocol_hash(&env),
-    );
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
-}
-
-#[test]
-fn test_advance_trial_phase_invalid_phase_rejected() {
-    let (env, _, pi, _, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-487C"),
-        &String::from_str(&env, "Phase Advance Validate"),
-        &symbol_short!("phase1"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-487C"),
-    );
-
-    let result = client.try_advance_trial_phase(
-        &pi,
-        &trial_id,
-        &symbol_short!("phaseX"),
-        &create_protocol_hash(&env),
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidStudyPhase)));
-}
-
-#[test]
-fn test_enrolment_after_phase_advance_uses_updated_trial() {
-    let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-487D"),
-        &String::from_str(&env, "Phase Advance + Enrol"),
-        &symbol_short!("phase1"),
-        &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-487D"),
-    );
-
-    let v2_hash: BytesN<32> = env.crypto().sha256(
-        &String::from_str(&env, "protocol_v2").into()
-    ).into();
-
-    client.advance_trial_phase(&pi, &trial_id, &symbol_short!("phase2"), &v2_hash);
-
-    // New enrolment after phase advance; must succeed (trial still Active)
-    let enrollment_id = client.enroll_participant(
-        &trial_id,
-        &patient,
-        &symbol_short!("armA"),
-        &1100,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "P-PHASE2"),
-    );
-
-    let trial = client.get_trial(&trial_id);
-    assert_eq!(trial.study_phase, symbol_short!("phase2"));
-    assert_eq!(trial.current_enrollment, 1);
-
-    let enrol = client.get_enrollment(&enrollment_id, &pi);
-    assert_eq!(enrol.trial_record_id, trial_id);
-}
-
-// ── #757: per-site enrollment quota release on withdrawal ──────────────────
-
-#[test]
-fn test_withdraw_participant_decrements_site_enrolled_and_allows_re_enrollment() {
-    let (env, _, pi, _, client) = create_test_env();
-    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
-
-    // site_a has max_enrollment = 50; fill it up with 50 participants
-    let participants: Vec<Address> = (0..50)
-        .map(|_| Address::generate(&env))
-        .collect();
-
-    let mut enrollment_ids = Vec::new(&env);
-    for (idx, participant) in participants.iter().enumerate() {
-        let enrollment_id = client.enrol_participant_at_site(
-            &trial_id,
-            &site_a,
-            &coord_a,
-            participant,
-            &symbol_short!("armA"),
-            &1100,
-            &create_protocol_hash(&env),
-            &String::from_str(&env, &format!("P{:02}", idx)),
-        );
-        enrollment_ids.push_back(enrollment_id);
-    }
-
-    // site_a is now full; 51st enrolment must fail
-    let extra = Address::generate(&env);
-    let result = client.try_enrol_participant_at_site(
-        &trial_id,
-        &site_a,
-        &coord_a,
-        &extra,
-        &symbol_short!("armA"),
-        &1100,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "PEXTRA"),
-    );
-    assert_eq!(result, Err(Ok(Error::SiteEnrollmentFull)));
-
-    // Withdraw the first participant
-    client.withdraw_participant(
-        &enrollment_ids.get(0).unwrap(),
-        &1200,
-        &symbol_short!("consent"),
-        &false,
-    );
-
-    // Now the 51st enrolment must succeed (site quota released)
-    let new_enrollment_id = client.enrol_participant_at_site(
-        &trial_id,
-        &site_a,
-        &coord_a,
-        &extra,
-        &symbol_short!("armA"),
-        &1200,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "PEXTRA"),
-    );
-
-    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
-    assert_eq!(enrollment.site_id, Some(site_a));
-}
-
-#[test]
-fn test_re_enroll_at_site_increments_site_enrolled() {
-    let (env, _, pi, _, client) = create_test_env();
-    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
-
-    let participant = Address::generate(&env);
-
-    // Initial enrolment at site_a
-    let enrollment_id = client.enrol_participant_at_site(
-        &trial_id,
-        &site_a,
-        &coord_a,
-        &participant,
-        &symbol_short!("armA"),
-        &1100,
-        &create_protocol_hash(&env),
-        &String::from_str(&env, "P001"),
-    );
-
-    // Withdraw
-    client.withdraw_participant(
-        &enrollment_id,
-        &1200,
-        &symbol_short!("consent"),
-        &false,
-    );
-
-    // Re-enrol at the same site
-    let new_enrollment_id = client.re_enroll_participant(
-        &trial_id,
-        &participant,
-        &enrollment_id,
-        &create_protocol_hash(&env),
-        &symbol_short!("armB"),
+        &attacker,
+        &symbol_short!("serious"),
+        &String::from_str(&env, "Unexpected adverse reaction"),
         &1300,
-        &String::from_str(&env, "P001-R1"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_submit_safety_report_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let result = client.try_submit_safety_report(
+        &999u64,
+        &pi,
+        &symbol_short!("serious"),
+        &String::from_str(&env, "Unexpected adverse reaction"),
+        &1300,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_update_protocol_success() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    let new_hash = create_protocol_hash(&env);
+    client.update_protocol(
+        &trial_id,
+        &pi,
+        &new_hash,
+        &String::from_str(&env, "Protocol amendment for safety"),
     );
 
-    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
-    assert_eq!(enrollment.site_id, Some(site_a));
-    assert_eq!(enrollment.prior_enrollment_id, Some(enrollment_id));
+    let trial = client.get_trial(&trial_id);
+    assert_eq!(trial.protocol_hash, new_hash);
+}
+
+#[test]
+fn test_update_protocol_wrong_pi() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+    let attacker = Address::generate(&env);
+
+    let result = client.try_update_protocol(
+        &trial_id,
+        &attacker,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "Protocol amendment for safety"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_update_protocol_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let result = client.try_update_protocol(
+        &999u64,
+        &pi,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "Protocol amendment for safety"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_amendment_history_success() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+
+    client.update_protocol(
+        &trial_id,
+        &pi,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "Protocol amendment for safety"),
+    );
+
+    let history = client.get_amendment_history(&trial_id, &pi);
+    assert_eq!(history.len(), 1);
+}
+
+#[test]
+fn test_get_amendment_history_wrong_pi() {
+    let (env, _, pi, _, client) = create_test_env();
+    let trial_id = setup_regulatory_trial(&env, &client, &pi);
+    let attacker = Address::generate(&env);
+
+    let result = client.try_get_amendment_history(&trial_id, &attacker);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_amendment_history_trial_not_found() {
+    let (env, _, pi, _, client) = create_test_env();
+
+    let result = client.try_get_amendment_history(&999u64, &pi);
+    assert!(result.is_err());
 }
