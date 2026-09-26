@@ -376,3 +376,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-874 -->
 - #874: [medical-device-tracking] get_patient_implants leaks any patient's implant records to any caller
+
+<!-- handsoff-issue-876 -->
+- #876: [medical-claims] Claim and payment data readable by any caller, no auth required
