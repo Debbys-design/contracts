@@ -368,3 +368,8 @@ Run integration tests:
 ```bash
 cargo test --test integration_tests
 ```
+
+## Handsoff notes
+
+<!-- handsoff-issue-850 -->
+- #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
