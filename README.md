@@ -371,8 +371,5 @@ cargo test --test integration_tests
 
 ## Handsoff notes
 
-<!-- handsoff-issue-843 -->
-- #843: [access-control] revoke_access silently blocks admin/PayerReviewer override
-
-<!-- handsoff-issue-844 -->
-- #844: [access-control] Crate's own test suite fails to compile
+<!-- handsoff-issue-850 -->
+- #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
