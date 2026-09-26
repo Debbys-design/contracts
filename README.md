@@ -379,3 +379,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-876 -->
 - #876: [medical-claims] Claim and payment data readable by any caller, no auth required
+
+<!-- handsoff-issue-877 -->
+- #877: [mental-health] No mechanism to revoke previously granted patient consent
