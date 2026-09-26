@@ -373,3 +373,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
+
+<!-- handsoff-issue-874 -->
+- #874: [medical-device-tracking] get_patient_implants leaks any patient's implant records to any caller
