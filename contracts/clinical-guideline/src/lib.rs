@@ -262,4 +262,4 @@ impl ClinicalGuidelineContract {
         }
         let gfr = renal_function
 
-/* … truncated 5242 chars — edit only what you need near the top … */
+/* … truncated 72 chars — edit only what you need near the top … */
