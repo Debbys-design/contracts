@@ -373,3 +373,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
+
+<!-- handsoff-issue-872 -->
+- #872: [mental-health] initialize() has no auth check — attacker can seize resolver authority over PHI
