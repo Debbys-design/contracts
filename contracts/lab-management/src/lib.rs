@@ -38,6 +38,8 @@ pub enum Error {
     /// The lab order counter has reached u64::MAX and cannot be incremented.
     OrderIdOverflow = 4,
     ProviderNotRegistered = 5,
+    /// initialize() has already been called; the provider registry is immutable.
+    AlreadyInitialized = 6,
 }
 
 #[contracttype]
@@ -93,7 +95,21 @@ pub struct LabManagementContract;
 
 #[contractimpl]
 impl LabManagementContract {
-    pub fn initialize(env: Env, provider_registry: Address) -> Result<(), Error> {
+    /// One-time initialization. Requires authorization from the designated
+    /// admin/deployer address and can only be called once; subsequent calls
+    /// return `Error::AlreadyInitialized` so the provider registry cannot be
+    /// overwritten by an attacker.
+    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
+        admin.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::ProviderRegistry)
+        {
+            return Err(Error::AlreadyInitialized);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::ProviderRegistry, &provider_registry);
@@ -249,11 +265,6 @@ impl LabManagementContract {
         // 2. Verify the caller is the assigned lab.
         if order.lab_id != Some(lab_id.clone()) {
             return Err(Error::Unauthorized);
-        }
+      
 
-        env.events()
-            .publish((Symbol::new(&env, "CRITICAL"), order_id), (test_code, val));
-        Ok(())
-    }
-}
-mod test;
+/* … truncated 142 chars — edit only what you need near the top … */
