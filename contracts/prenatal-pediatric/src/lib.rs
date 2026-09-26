@@ -162,6 +162,7 @@ pub struct PediatricMeasurements {
 pub struct PediatricGrowthRecord {
     pub growth_id: u64,
     pub patient_id: Address,
+    pub provider_id: Address,
     pub measurement_date: u64,
     pub age_months: u32,
     pub measurements: PediatricMeasurements,
@@ -214,6 +215,9 @@ pub enum DataKey {
     GrowthByAge(Address, u32),
     Milestone(Address, u32),
     WellChildVisit(Address, u64),
+    /// (patient/guardian, grantee) -> true when the patient/guardian has
+    /// authorized the grantee (e.g. a family member) to read their records.
+    AccessGrant(Address, Address),
 }
 
 #[contract]
@@ -551,11 +555,20 @@ impl MaternalChildHealthContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
-        let _newborn: NewbornRecord = env
+        let newborn: NewbornRecord = env
             .storage()
             .persistent()
             .get(&DataKey::Newborn(newborn_id.clone()))
             .ok_or(Error::NotFound)?;
+        let delivery = Self::get_delivery(&env, newborn.delivery_id)?;
+
+        // Proving control of an address is not proof of role -- the caller
+        // must be the delivering provider or a credentialed provider.
+        if provider_id != delivery.delivering_provider
+            && !Self::is_registered_provider(&env, &provider_id)
+        {
+            return Err(Error::Unauthorized);
+        }
 
         let screening_id = Self::next_id(&env, symbol_short!("nbs_ctr"));
         let screening = NewbornScreening {
@@ -607,6 +620,7 @@ impl MaternalChildHealthContract {
         let growth = PediatricGrowthRecord {
             growth_id,
             patient_id: patient_id.clone(),
+            provider_id,
             measurement_date,
             age_months,
             measurements,
@@ -734,65 +748,198 @@ impl MaternalChildHealthContract {
         })
     }
 
-    pub fn get_pregnancy_record(env: Env, pregnancy_id: u64) -> Result<PregnancyRecord, Error> {
-        Self::get_pregnancy(&env, pregnancy_id)
+    /// Allow `grantee` (e.g. an authorized family member) to read the
+    /// records of `patient_id`. For newborn records the mother acts as
+    /// guardian, so grants from the mother cover her newborns.
+    pub fn grant_record_access(env: Env, patient_id: Address, grantee: Address) {
+        patient_id.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::AccessGrant(patient_id, grantee), &true);
     }
 
-    pub fn get_prenatal_visit(env: Env, visit_id: u64) -> Result<PrenatalVisit, Error> {
+    /// Revoke a grant previously made with `grant_record_access`.
+    pub fn revoke_record_access(env: Env, patient_id: Address, grantee: Address) {
+        patient_id.require_auth();
         env.storage()
+            .persistent()
+            .remove(&DataKey::AccessGrant(patient_id, grantee));
+    }
+
+    pub fn has_record_access(env: Env, patient_id: Address, grantee: Address) -> bool {
+        Self::has_access_grant(&env, &patient_id, &grantee)
+    }
+
+    pub fn get_pregnancy_record(
+        env: Env,
+        requester: Address,
+        pregnancy_id: u64,
+    ) -> Result<PregnancyRecord, Error> {
+        requester.require_auth();
+        let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
+        Self::check_pregnancy_access(&env, &requester, &pregnancy)?;
+        Ok(pregnancy)
+    }
+
+    pub fn get_prenatal_visit(
+        env: Env,
+        requester: Address,
+        visit_id: u64,
+    ) -> Result<PrenatalVisit, Error> {
+        requester.require_auth();
+        let visit: PrenatalVisit = env
+            .storage()
             .persistent()
             .get(&DataKey::PrenatalVisit(visit_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let pregnancy = Self::get_pregnancy(&env, visit.pregnancy_id)?;
+        Self::check_pregnancy_access(&env, &requester, &pregnancy)?;
+        Ok(visit)
     }
 
-    pub fn get_prenatal_screening(env: Env, screening_id: u64) -> Result<PrenatalScreening, Error> {
-        env.storage()
+    pub fn get_prenatal_screening(
+        env: Env,
+        requester: Address,
+        screening_id: u64,
+    ) -> Result<PrenatalScreening, Error> {
+        requester.require_auth();
+        let screening: PrenatalScreening = env
+            .storage()
             .persistent()
             .get(&DataKey::PrenatalScreening(screening_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let pregnancy = Self::get_pregnancy(&env, screening.pregnancy_id)?;
+        Self::check_pregnancy_access(&env, &requester, &pregnancy)?;
+        Ok(screening)
     }
 
-    pub fn get_ultrasound(env: Env, ultrasound_id: u64) -> Result<UltrasoundRecord, Error> {
-        env.storage()
+    pub fn get_ultrasound(
+        env: Env,
+        requester: Address,
+        ultrasound_id: u64,
+    ) -> Result<UltrasoundRecord, Error> {
+        requester.require_auth();
+        let ultrasound: UltrasoundRecord = env
+            .storage()
             .persistent()
             .get(&DataKey::Ultrasound(ultrasound_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let pregnancy = Self::get_pregnancy(&env, ultrasound.pregnancy_id)?;
+        Self::check_pregnancy_access(&env, &requester, &pregnancy)?;
+        Ok(ultrasound)
     }
 
-    pub fn get_labor_record(env: Env, labor_id: u64) -> Result<LaborRecord, Error> {
-        env.storage()
+    pub fn get_labor_record(
+        env: Env,
+        requester: Address,
+        labor_id: u64,
+    ) -> Result<LaborRecord, Error> {
+        requester.require_auth();
+        let labor: LaborRecord = env
+            .storage()
             .persistent()
             .get(&DataKey::Labor(labor_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let pregnancy = Self::get_pregnancy(&env, labor.pregnancy_id)?;
+        Self::check_pregnancy_access(&env, &requester, &pregnancy)?;
+        Ok(labor)
     }
 
-    pub fn get_delivery_record(env: Env, delivery_id: u64) -> Result<DeliveryRecord, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Delivery(delivery_id))
-            .ok_or(Error::NotFound)
+    pub fn get_delivery_record(
+        env: Env,
+        requester: Address,
+        delivery_id: u64,
+    ) -> Result<DeliveryRecord, Error> {
+        requester.require_auth();
+        let delivery = Self::get_delivery(&env, delivery_id)?;
+        Self::check_delivery_access(&env, &requester, &delivery)?;
+        Ok(delivery)
     }
 
-    pub fn get_newborn_record(env: Env, newborn_id: Address) -> Result<NewbornRecord, Error> {
-        env.storage()
+    pub fn get_newborn_record(
+        env: Env,
+        requester: Address,
+        newborn_id: Address,
+    ) -> Result<NewbornRecord, Error> {
+        requester.require_auth();
+        let newborn: NewbornRecord = env
+            .storage()
             .persistent()
             .get(&DataKey::Newborn(newborn_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let delivery = Self::get_delivery(&env, newborn.delivery_id)?;
+        Self::check_delivery_access(&env, &requester, &delivery)?;
+        Ok(newborn)
     }
 
     pub fn get_growth_record(
         env: Env,
+        requester: Address,
         patient_id: Address,
         age_months: u32,
     ) -> Result<PediatricGrowthRecord, Error> {
+        requester.require_auth();
         let growth_id: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::GrowthByAge(patient_id, age_months))
             .ok_or(Error::NotFound)?;
-        env.storage()
+        let growth: PediatricGrowthRecord = env
+            .storage()
             .persistent()
             .get(&DataKey::Growth(growth_id))
+            .ok_or(Error::NotFound)?;
+        if requester != growth.patient_id
+            && requester != growth.provider_id
+            && !Self::has_access_grant(&env, &growth.patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+        Ok(growth)
+    }
+
+    fn has_access_grant(env: &Env, patient_id: &Address, grantee: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AccessGrant(patient_id.clone(), grantee.clone()))
+            .unwrap_or(false)
+    }
+
+    /// The patient, the provider on record, or a grantee of the patient may
+    /// read pregnancy-scoped records.
+    fn check_pregnancy_access(
+        env: &Env,
+        requester: &Address,
+        pregnancy: &PregnancyRecord,
+    ) -> Result<(), Error> {
+        if *requester == pregnancy.patient_id
+            || *requester == pregnancy.provider_id
+            || Self::has_access_grant(env, &pregnancy.patient_id, requester)
+        {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized)
+        }
+    }
+
+    /// Delivery and newborn records are readable by the delivering provider
+    /// or anyone with access to the underlying pregnancy (mother as guardian).
+    fn check_delivery_access(
+        env: &Env,
+        requester: &Address,
+        delivery: &DeliveryRecord,
+    ) -> Result<(), Error> {
+        if *requester == delivery.delivering_provider {
+            return Ok(());
+        }
+        let pregnancy = Self::get_pregnancy(env, delivery.pregnancy_id)?;
+        Self::check_pregnancy_access(env, requester, &pregnancy)
+    }
+
+    fn get_delivery(env: &Env, delivery_id: u64) -> Result<DeliveryRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Delivery(delivery_id))
             .ok_or(Error::NotFound)
     }
 

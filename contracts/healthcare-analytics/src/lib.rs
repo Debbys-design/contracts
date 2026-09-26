@@ -395,6 +395,12 @@ impl HealthcareAnalytics {
     /// Mark a report job as completed with actual resource usage
     pub fn complete_report(env: Env, job_id: u64, cpu_used: u64, memory_used: u64, wall_time_ms: u64) -> Result<(), Error> {
         let job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
+        job.requested_by.require_auth();
+
+        if job.state != JobState::Running {
+            return Err(Error::JobNotFound);
+        }
+
         complete_job(&env, job_id, cpu_used, memory_used)
             .map_err(|_| Error::JobNotFound)?;
 
@@ -462,6 +468,11 @@ impl HealthcareAnalytics {
         requester.require_auth();
 
         let mut job = get_job(&env, job_id).map_err(|_| Error::JobNotFound)?;
+
+        if job.requested_by != requester {
+            return Err(Error::Unauthorized);
+        }
+
         job.state = JobState::Failed;
         env.storage().persistent().set(&ResourceKey::ReportJob(job_id), &job);
 

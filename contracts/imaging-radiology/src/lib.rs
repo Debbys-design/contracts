@@ -172,6 +172,8 @@ pub enum Error {
     FinalReportNotFound = 12,
     /// Patient consent not found or invalid for imaging order
     ConsentRequired = 13,
+    /// A radiologist cannot be assigned to peer review their own study
+    SelfReviewNotAllowed = 14,
 }
 
 /// --------------------
