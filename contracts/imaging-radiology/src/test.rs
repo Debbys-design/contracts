@@ -560,6 +560,7 @@ fn test_request_peer_review_rejects_self_review() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),

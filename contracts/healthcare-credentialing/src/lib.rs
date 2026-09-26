@@ -954,6 +954,9 @@ impl HealthcareCredentialingSystem {
         recredentialing_deadline: u64,
     ) -> Result<u64, Error> {
         initiating_authority.require_auth();
+        if !is_committee_member(&env, &initiating_authority) {
+            return Err(Error::NotAuthorized);
+        }
 
         // Check if there's already an active recredentialing case
         if let Some(active_case_id) = env
