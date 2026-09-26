@@ -520,6 +520,11 @@ impl PrescriptionContract {
         strict_mode: bool,
     ) -> Result<(), Error> {
         admin.require_auth();
+        // Once an admin is set, only that admin may reconfigure (#887).
+        let configured: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        if configured.as_ref().map_or(false, |a| *a != admin) {
+            return Err(Error::Unauthorized);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::AllergyRegistry, &allergy_registry);
@@ -1312,11 +1317,15 @@ impl PrescriptionContract {
         Ok(())
     }
 
+    /// Replace the contraindication list for a registered medication.
+    /// Restricted to registry writers (#888).
     pub fn set_medication_contraindications(
         env: Env,
+        writer: Address,
         medication: String,
         contraindications: Vec<String>,
     ) -> Result<(), Error> {
+        require_registry_writer(&env, &writer)?;
         if !env
             .storage()
             .persistent()
