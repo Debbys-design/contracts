@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Bytes, BytesN, Env, Vec};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -246,4 +246,99 @@ fn test_multiple_schema_versions_coexist() {
     client.verify_eligibility(&subject, &bundle(&env, 0xAA, 1));
     // v2 proof (different proof bytes → different nullifier)
     client.verify_eligibility(&subject, &bundle(&env, 0xBB, 2));
+}
+
+// ── admin rotation ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_admin_rotation_success() {
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin);
+    client.accept_admin_rotation(&new_admin);
+
+    // New admin can now perform admin-only actions.
+    client.register_verifier_key(&new_admin, &1u32, &vk(&env, 0xAA));
+
+    // Old admin is no longer authorized.
+    let err = client
+        .try_register_verifier_key(&admin, &2u32, &vk(&env, 0xBB))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::Unauthorized);
+}
+
+#[test]
+fn test_double_propose_returns_error() {
+    let (env, admin, client) = setup();
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &first);
+    let err = client
+        .try_propose_admin_rotation(&admin, &second)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::RotationPending);
+}
+
+#[test]
+fn test_wrong_address_accept_returns_error() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+    let err = client
+        .try_accept_admin_rotation(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NotPendingAdmin);
+}
+
+#[test]
+fn test_accept_without_proposal_returns_error() {
+    let (env, _, client) = setup();
+    let stranger = Address::generate(&env);
+    let err = client
+        .try_accept_admin_rotation(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NoRotationPending);
+}
+
+#[test]
+fn test_accept_after_expiry_returns_error() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+
+    // Advance past the 24h rotation window.
+    env.ledger().with_mut(|l| {
+        l.timestamp += ROTATION_TTL + 1;
+    });
+
+    let err = client
+        .try_accept_admin_rotation(&pending)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::RotationExpired);
+}
+
+#[test]
+fn test_accept_at_exact_expiry_boundary() {
+    let (env, admin, client) = setup();
+    let pending = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &pending);
+
+    // Exactly at the expiry boundary the rotation is still valid.
+    env.ledger().with_mut(|l| {
+        l.timestamp += ROTATION_TTL;
+    });
+
+    client.accept_admin_rotation(&pending);
+    client.register_verifier_key(&pending, &1u32, &vk(&env, 0xAA));
 }
