@@ -376,3 +376,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-878 -->
 - #878: [medical-device-tracking] Unchecked u64 multiply/add when computing maintenance schedule
+
+<!-- handsoff-issue-890 -->
+- #890: [patient-registry] register_institution has no admin gate, undermining doctor verification
