@@ -29,7 +29,9 @@
 mod test;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, String, Symbol, Vec,
+};
 use types::{AdverseEvent, DataKey, Error, VaccineRecord, VaccineSeries};
 
 #[contract]
