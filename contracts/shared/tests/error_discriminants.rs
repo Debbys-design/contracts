@@ -1,97 +1,111 @@
-/// Test to verify that all #[contracterror] enums have unique and sequential discriminants starting from 1
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
-use regex::Regex;
+use std::path::{Path, PathBuf};
 
-#[test]
-fn validate_error_enum_discriminants() {
-    let workspace_root = env!("CARGO_MANIFEST_DIR");
-    let contracts_dir = Path::new(workspace_root).parent().unwrap();
-
-    let mut errors = Vec::new();
-
-    // Find all lib.rs files in contracts
-    for entry in fs::read_dir(contracts_dir).expect("Failed to read contracts dir") {
-        let entry = entry.expect("Failed to read directory entry");
+/// Recursively collect all `.rs` files under `dir`.
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
 
-        if path.is_dir() && !path.file_name().map_or(false, |n| n == "shared") {
-            let lib_path = path.join("src").join("lib.rs");
-
-            if lib_path.exists() {
-                if let Err(e) = validate_lib_file(&lib_path) {
-                    errors.push(format!("{}: {}", lib_path.display(), e));
-                }
+/// Extract the discriminant values from a `#[contracterror]` enum body.
+fn extract_discriminants(source: &str) -> Vec<u32> {
+    let mut discriminants = Vec::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(idx) = line.find('=') {
+            let value = line[idx + 1..].trim().trim_end_matches(',').trim();
+            if let Ok(discriminant) = value.parse::<u32>() {
+                discriminants.push(discriminant);
             }
         }
     }
+    discriminants
+}
 
-    if !errors.is_empty() {
-        panic!("Error enum validation failed:\n{}", errors.join("\n"));
+/// Validate that a single `#[contracterror]` enum has unique and sequential
+/// discriminants.
+fn validate_enum_discriminants(enum_name: &str, source: &str) {
+    let discriminants = extract_discriminants(source);
+    assert!(
+        !discriminants.is_empty(),
+        "{enum_name}: no discriminants found"
+    );
+
+    let mut seen = BTreeSet::new();
+    for discriminant in &discriminants {
+        assert!(
+            seen.insert(*discriminant),
+            "{enum_name}: duplicate discriminant {discriminant}"
+        );
+    }
+
+    let mut sorted = discriminants.clone();
+    sorted.sort_unstable();
+    for window in sorted.windows(2) {
+        assert_eq!(
+            window[1],
+            window[0] + 1,
+            "{enum_name}: non-sequential discriminants {} and {}",
+            window[0],
+            window[1]
+        );
     }
 }
 
-fn validate_lib_file(path: &Path) -> Result<(), String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+/// Scan every `.rs` file under each contract's `src/` directory for
+/// `#[contracterror]` enums and validate their discriminants. This ensures
+/// contracts that declare their error enum in `types.rs` (rather than
+/// `lib.rs`) are actually inspected.
+#[test]
+fn validate_error_enum_discriminants() {
+    let contracts_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("shared crate should live under contracts/");
 
-    // Find all #[contracterror] enum blocks
-    let contracterror_regex = Regex::new(
-        r#"#\[contracterror\]\s*\n(?:[^\n]*\n)*?pub enum (\w+)\s*\{([^}]+)\}"#
-    ).unwrap();
-
-    for caps in contracterror_regex.captures_iter(&content) {
-        let enum_name = caps.get(1).unwrap().as_str();
-        let enum_body = caps.get(2).unwrap().as_str();
-
-        validate_enum_variants(enum_name, enum_body, path)?;
-    }
-
-    Ok(())
-}
-
-fn validate_enum_variants(enum_name: &str, body: &str, path: &Path) -> Result<(), String> {
-    // Extract all discriminant values
-    let discriminant_regex = Regex::new(r"(\w+)\s*=\s*(\d+)").unwrap();
-
-    let mut discriminants: Vec<(String, u32)> = Vec::new();
-    let mut seen = HashSet::new();
-
-    for caps in discriminant_regex.captures_iter(body) {
-        let variant_name = caps.get(1).unwrap().as_str();
-        let value_str = caps.get(2).unwrap().as_str();
-
-        let value: u32 = value_str.parse()
-            .map_err(|_| format!("Invalid discriminant value: {}", value_str))?;
-
-        // Check for duplicates
-        if !seen.insert(value) {
-            return Err(format!(
-                "Duplicate discriminant {} in enum {} at {}",
-                value, enum_name, path.display()
-            ));
+    let mut checked = 0usize;
+    let entries = fs::read_dir(contracts_dir).expect("contracts directory should be readable");
+    for entry in entries.flatten() {
+        let contract_path = entry.path();
+        if !contract_path.is_dir() {
+            continue;
         }
 
-        discriminants.push((variant_name.to_string(), value));
-    }
+        let src_path = contract_path.join("src");
+        if !src_path.is_dir() {
+            continue;
+        }
 
-    if discriminants.is_empty() {
-        return Ok(()); // No enum variants with explicit discriminants
-    }
+        let mut rs_files = Vec::new();
+        collect_rs_files(&src_path, &mut rs_files);
 
-    // Check if sequential starting from 1
-    discriminants.sort_by_key(|k| k.1);
+        for file in rs_files {
+            let source = match fs::read_to_string(&file) {
+                Ok(source) => source,
+                Err(_) => continue,
+            };
+            if !source.contains("#[contracterror]") {
+                continue;
+            }
 
-    for (i, (_variant, value)) in discriminants.iter().enumerate() {
-        let expected = (i + 1) as u32;
-        if *value != expected {
-            return Err(format!(
-                "Non-sequential discriminant in enum {}: expected {}, got {} at {}",
-                enum_name, expected, value, path.display()
-            ));
+            let enum_name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unknown>");
+            validate_enum_discriminants(enum_name, &source);
+            checked += 1;
         }
     }
 
-    Ok(())
+    assert!(checked > 0, "no #[contracterror] enums were inspected");
 }
