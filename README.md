@@ -373,3 +373,6 @@ cargo test --test integration_tests
 
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
+
+<!-- handsoff-issue-878 -->
+- #878: [medical-device-tracking] Unchecked u64 multiply/add when computing maintenance schedule
