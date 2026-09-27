@@ -25,6 +25,7 @@
 //! tracking prevents duplicate administrations. Adverse event records encrypted. Patient identity
 //! validated via address. Timestamps immutable once recorded.
 
+#[cfg(test)]
 mod test;
 mod types;
 

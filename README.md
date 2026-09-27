@@ -374,8 +374,5 @@ cargo test --test integration_tests
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
 
-<!-- handsoff-issue-867 -->
-- #867: [medical-device-tracking] Crate fails to compile: use-after-move on Symbol/Address fields
-
-<!-- handsoff-issue-868 -->
-- #868: [medical-claims] Crate fails to compile: use-after-move on reviewer in register_reviewer
+<!-- handsoff-issue-872 -->
+- #872: [mental-health] initialize() has no auth check — attacker can seize resolver authority over PHI
