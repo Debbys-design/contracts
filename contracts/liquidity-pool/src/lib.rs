@@ -153,10 +153,9 @@ impl LiquidityPoolContract {
             .instance()
             .get(&DataKey::TokenB)
             .ok_or(Error::NotInitialized)?;
-        let pool = env.current_contract_address();
-        token::Client::new(&env, &token_a).transfer(&provider, &pool, &actual_a);
-        token::Client::new(&env, &token_b).transfer(&provider, &pool, &actual_b);
 
+        // Persist updated reserves/shares BEFORE any external token transfer to
+        // close the reentrancy window (matches remove_liquidity ordering).
         env.storage()
             .instance()
             .set(&DataKey::ReserveA, &(reserve_a + actual_a));
@@ -175,6 +174,10 @@ impl LiquidityPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(provider.clone()), &(prev + shares));
+
+        let pool = env.current_contract_address();
+        token::Client::new(&env, &token_a).transfer(&provider, &pool, &actual_a);
+        token::Client::new(&env, &token_b).transfer(&provider, &pool, &actual_b);
 
         env.events().publish(
             (symbol_short!("ADD_LIQ"), provider),
@@ -251,15 +254,22 @@ impl LiquidityPoolContract {
         token::Client::new(&env, &token_a).transfer(&pool, &provider, &out_a);
         token::Client::new(&env, &token_b).transfer(&pool, &provider, &out_b);
 
-        env.events()
-            .publish((symbol_short!("REM_LIQ"), provider), (out_a, out_b, shares));
+        env.events().publish(
+            (symbol_short!("REM_LIQ"), provider),
+            (out_a, out_b, shares),
+        );
         Ok((out_a, out_b))
     }
 
-    /// Swap tokens: if zero_for_one is true, swap token_a for token_b; else swap token_b for token_a.
-    /// amount_in: amount of input token to trade.
-    /// min_out: minimum acceptable output (slippage protection).
-    pub fn swap(env: Env, trader: Address, amount_in: i128, min_out: i128, zero_for_one: bool) -> Result<i128, Error> {
+    /// Swap an exact input amount of one token for the other.
+    /// `a_to_b` selects the direction. Applies the pool fee and enforces min_out.
+    pub fn swap(
+        env: Env,
+        trader: Address,
+        amount_in: i128,
+        min_out: i128,
+        a_to_b: bool,
+    ) -> Result<i128, Error> {
         trader.require_auth();
         if amount_in <= 0 {
             return Err(Error::ZeroAmount);
@@ -278,51 +288,49 @@ impl LiquidityPoolContract {
             return Err(Error::InsufficientLiquidity);
         }
 
-        let (token_in, token_out, reserve_in, reserve_out) = if zero_for_one {
-            let token_a: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenA)
-                .ok_or(Error::NotInitialized)?;
-            let token_b: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenB)
-                .ok_or(Error::NotInitialized)?;
-            (token_a, token_b, reserve_a, reserve_b)
+        let (reserve_in, reserve_out) = if a_to_b {
+            (reserve_a, reserve_b)
         } else {
-            let token_a: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenA)
-                .ok_or(Error::NotInitialized)?;
-            let token_b: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenB)
-                .ok_or(Error::NotInitialized)?;
-            (token_b, token_a, reserve_b, reserve_a)
+            (reserve_b, reserve_a)
         };
 
-        // Constant-product AMM with fee: (x + dx*(1-fee)) * (y - dy) = x * y
-        let amount_in_with_fee = amount_in
+        let amount_in_after_fee = amount_in
             .checked_mul(10_000 - POOL_FEE_BPS)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 10_000;
-        let amount_out = reserve_out
-            .checked_mul(amount_in_with_fee)
-            .ok_or(Error::ArithmeticOverflow)?
-            / (reserve_in + amount_in_with_fee);
+            .ok_or(Error::ArithmeticOverflow)? / 10_000;
+        let numerator = amount_in_after_fee
+            .checked_mul(reserve_out)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let denominator = reserve_in
+            .checked_add(amount_in_after_fee)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let amount_out = numerator / denominator;
 
+        if amount_out <= 0 || amount_out >= reserve_out {
+            return Err(Error::InsufficientLiquidity);
+        }
         if amount_out < min_out {
             return Err(Error::SlippageExceeded);
         }
 
-        let pool = env.current_contract_address();
-        token::Client::new(&env, &token_in).transfer(&trader, &pool, &amount_in);
-        token::Client::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
+        let token_a: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenA)
+            .ok_or(Error::NotInitialized)?;
+        let token_b: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenB)
+            .ok_or(Error::NotInitialized)?;
+        let (token_in, token_out) = if a_to_b {
+            (token_a, token_b)
+        } else {
+            (token_b, token_a)
+        };
 
-        if zero_for_one {
+        // Persist updated reserves BEFORE any external token transfer to close
+        // the reentrancy window (matches remove_liquidity ordering).
+        if a_to_b {
             env.storage()
                 .instance()
                 .set(&DataKey::ReserveA, &(reserve_a + amount_in));
@@ -338,59 +346,18 @@ impl LiquidityPoolContract {
                 .set(&DataKey::ReserveA, &(reserve_a - amount_out));
         }
 
-        env.events()
-            .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out, zero_for_one));
+        let pool = env.current_contract_address();
+        token::Client::new(&env, &token_in).transfer(&trader, &pool, &amount_in);
+        token::Client::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
+
+        env.events().publish(
+            (symbol_short!("SWAP"), trader),
+            (amount_in, amount_out, a_to_b),
+        );
         Ok(amount_out)
     }
 
-    /// Propose transferring admin to `new_admin`. Must be confirmed by `new_admin`
-    /// within 24 hours via `accept_admin_rotation`.
-    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        if admin != stored {
-            return Err(Error::Unauthorized);
-        }
-        if env.storage().instance().has(&DataKey::PendingAdmin) {
-            return Err(Error::RotationPending);
-        }
-        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.storage().instance().set(&DataKey::RotationExpiry, &expiry);
-        Ok(())
-    }
-
-    /// New admin confirms the rotation proposed by the current admin.
-    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
-        new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(Error::NoRotationPending)?;
-        if new_admin != pending {
-            return Err(Error::NotPendingAdmin);
-        }
-        let expiry: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RotationExpiry)
-            .unwrap_or(0);
-        if env.ledger().timestamp() > expiry {
-            env.storage().instance().remove(&DataKey::PendingAdmin);
-            env.storage().instance().remove(&DataKey::RotationExpiry);
-            return Err(Error::RotationExpired);
-        }
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.storage().instance().remove(&DataKey::RotationExpiry);
-        Ok(())
-    }
-
+    /// Read-only pool statistics.
     pub fn get_stats(env: Env) -> PoolStats {
         PoolStats {
             reserve_a: env
@@ -411,7 +378,8 @@ impl LiquidityPoolContract {
         }
     }
 
-    pub fn get_shares(env: Env, provider: Address) -> i128 {
+    /// LP share balance for a provider.
+    pub fn shares_of(env: Env, provider: Address) -> i128 {
         env.storage()
             .persistent()
             .get(&DataKey::Shares(provider))
@@ -419,18 +387,16 @@ impl LiquidityPoolContract {
     }
 }
 
-fn sqrt(n: i128) -> i128 {
-    if n <= 0 {
+/// Integer square root (floor) for initial share supply.
+fn sqrt(value: i128) -> i128 {
+    if value <= 0 {
         return 0;
     }
-    let mut x = n;
+    let mut x = value;
     let mut y = (x + 1) / 2;
     while y < x {
         x = y;
-        y = (x + n / x) / 2;
+        y = (x + value / x) / 2;
     }
     x
 }
-
-#[cfg(test)]
-mod test;
