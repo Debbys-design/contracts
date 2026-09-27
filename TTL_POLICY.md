@@ -287,66 +287,35 @@ if any contract failed.
 
 ### 4. Verify success
 
-- **Script output:** confirm the summary line reports `Failed: 0` and that every contract ID logged an
-  `Extending TTL for: <id>` line without a following `WARNING: Failed to extend TTL for: <id>`.
-- **`stellar contract extend` output:** the command itself reports the resulting expiration ledger for
-  each entry it touches — capture the script's stdout (it's not redirected) and confirm the reported
-  ledger is `~LEDGERS_TO_EXTEND` ledgers ahead of the ledger the transaction landed in.
-- **Current TTL / expiry lookup (per contract, without extending anything):** query the contract
-  instance's `liveUntilLedgerSeq` via [Stellar Laboratory](https://laboratory.stellar.org)'s "Ledger
-  Entries" / contract-data explorer for the target network, using the contract's `C...` address — or
-  call the network's Soroban RPC `getLedgerEntries` method directly with the contract instance's
-  ledger key, and compare the returned `liveUntilLedgerSeq` against the current sequence from
-  `getLatestLedger`:
+- **Script output:** confirm the `Extended: N / Failed: 0 / Total: N` summary shows every contract
+  succeeded and the process exited `0`.
+- **On-chain check:** for each contract ID, query the current TTL and confirm it is at least the
+  requested `--ledgers-to-extend` value:
 
   ```bash
-  RPC_URL="https://mainnet.sorobanrpc.com"   # use the network's RPC endpoint
-
-  curl -s -X POST "$RPC_URL" -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' | jq '.result.sequence'
+  stellar contract info \
+    --network mainnet \
+    --id <CONTRACT_ID>
   ```
 
-  The contract is healthy if `liveUntilLedgerSeq` is comfortably above the current ledger sequence
-  (well beyond `CRITICAL_THRESHOLD`, ~86,400 ledgers / ~1 day, from `scripts/extend-ttls.sh`). See the
-  [Stellar CLI TTL cookbook](https://developers.stellar.org/docs/tools/cli/cookbook/extend-contract-instance)
-  for how to encode a contract instance's ledger key for `getLedgerEntries`.
+  The reported `liveUntilLedger` should be well ahead of the current ledger. Repeat for every entry in
+  `deployments/mainnet.json`.
+- **Workflow re-run:** re-run the failed `Extend Contract TTLs` job (or wait for the next scheduled
+  run) and confirm it completes green. If it still fails, capture the run URL and error output in the
+  tracking issue before escalating.
 
-### 5. If extension still fails
+### 5. When the scheduled job fails
 
-- Re-run with `--dry-run` to confirm the manifest and contract IDs are being parsed correctly.
-- Check the identity's XLM balance — insufficient balance is the most common cause of `stellar contract
-  extend` failures.
-- Confirm `deployments/<network>.json` is up to date and every listed contract ID is still deployed.
-- If the failure persists, escalate in the deployment/automation-bug issue rather than retrying
-  indefinitely — repeated manual extension without addressing the root cause just delays discovering why
-  the cron job itself is broken.
+If the automatic TTL extension job fails (e.g. the run reported in issue #580 on
+`2026-07-20T03:23:37.546Z` for `mainnet`), treat it as an incident:
 
-## Compliance Checklist
-
-- [ ] All critical healthcare data uses Critical retention class
-- [ ] TTL bumping implemented on write paths
-- [ ] TTL bumping implemented on read paths (critical data)
-- [ ] Tests verify TTL extension behavior
-- [ ] Documentation updated with retention class choice
-- [ ] Snapshots include TTL extension verification
-- [ ] No hardcoded TTL constants (use ttl-config)
-
-## FAQ
-
-**Q: Why bump on read operations?**
-A: Critical healthcare data must never expire unexpectedly. Bumping on reads ensures active records stay fresh even if writes are infrequent.
-
-**Q: Can I use different retention classes for different keys?**
-A: Yes. Use Critical for patient records, Operational for temporary data, Ephemeral for counters.
-
-**Q: What if a record isn't accessed for 31 days?**
-A: It will expire. This is intentional for Operational/Ephemeral data. For Critical data, implement a background job to bump keys periodically.
-
-**Q: How do I choose a retention class?**
-A: Ask: "If this data expires, would it harm patient care?" If yes → Critical. If maybe → Operational. If no → Ephemeral.
-
-## References
-
-- [Soroban Storage Documentation](https://soroban.stellar.org/docs/learn/storing-data)
-- [TTL Configuration Module](contracts/ttl-config/src/lib.rs)
-- [Patient Registry Implementation](contracts/patient-registry/src/lib.rs)
+1. **Triage the run.** Open the linked workflow run and read the failing step's logs. Common causes:
+   expired/rotated deployer secret, insufficient XLM balance, RPC/network outage, or a contract ID
+   missing from `deployments/<network>.json`.
+2. **Extend manually.** Follow sections 1–4 above to extend TTLs by hand so no contract expires while
+   the automation is being fixed.
+3. **Record the outcome.** Comment on the tracking issue with the run URL, the root cause, the manual
+   extension summary (`Extended/Failed/Total`), and the follow-up fix (e.g. rotate the secret, top up
+   the deployer account).
+4. **Confirm recovery.** Once the underlying cause is fixed, verify the next scheduled run succeeds
+   and close the issue.

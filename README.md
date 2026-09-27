@@ -374,5 +374,11 @@ cargo test --test integration_tests
 <!-- handsoff-issue-850 -->
 - #850: [allergy-tracking] Documented patient-deregistration deletion does not exist
 
-<!-- handsoff-issue-872 -->
-- #872: [mental-health] initialize() has no auth check — attacker can seize resolver authority over PHI
+<!-- handsoff-issue-874 -->
+- #874: [medical-device-tracking] get_patient_implants leaks any patient's implant records to any caller
+
+<!-- handsoff-issue-876 -->
+- #876: [medical-claims] Claim and payment data readable by any caller, no auth required
+
+<!-- handsoff-issue-877 -->
+- #877: [mental-health] No mechanism to revoke previously granted patient consent
